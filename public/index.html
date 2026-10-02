@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diep.io Clone Enhanced</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #cdcdcd; font-family: sans-serif; user-select: none; }
+  canvas { display: block; cursor: crosshair; }
+  #hud { position: fixed; top: 12px; left: 12px; padding: 8px 12px; background: rgba(0,0,0,.6); color: #fff; border-radius: 6px; font-size: 13px; }
+  
+  /* Leaderboard */
+  #leaderboard { position: fixed; top: 12px; right: 12px; width: 180px; background: rgba(0,0,0,.6); color: #fff; border-radius: 6px; padding: 10px; font-size: 12px; }
+  #leaderboard .title { text-align: center; font-weight: bold; margin-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,0.2); padding-bottom: 4px; }
+  .lb-row { display: flex; justify-content: space-between; margin: 3px 0; }
+
+  /* Upgrade Class Selector */
+  #classes { position: fixed; top: 12px; left: 180px; display: none; gap: 8px; }
+  .class-btn { background: #00b2e1; border: 2px solid #fff; color: #fff; padding: 8px 12px; font-weight: bold; border-radius: 6px; cursor: pointer; transition: 0.2s; }
+  .class-btn:hover { transform: scale(1.05); background: #008cb3; }
+
+  /* XP & Stats Panel */
+  #xp { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); width: 340px; }
+  #xp .bar { height: 16px; background: rgba(0,0,0,.4); border-radius: 8px; overflow: hidden; border: 2px solid #333; }
+  #xp .fill { height: 100%; width: 0; background: #f1c40f; transition: width 0.1s; }
+  #xp .label { text-align: center; color: #111; font-weight: 700; font-size: 14px; margin-bottom: 4px; }
+  
+  #panel { position: fixed; bottom: 18px; left: 12px; padding: 10px 12px; background: rgba(0,0,0,.6); color: #fff; border-radius: 8px; font-size: 13px; width: 250px; }
+  .row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+  .row .name { flex: 1; }
+  .pips { display: flex; gap: 2px; }
+  .pip { width: 7px; height: 12px; background: rgba(255,255,255,.2); border-radius: 1px; }
+  .pip.on { background: #2ecc71; }
+  .row button { width: 22px; height: 22px; border: 0; border-radius: 4px; background: #2ecc71; color: #fff; font-weight: bold; cursor: pointer; }
+  .row button:disabled { background: #555; opacity: 0.4; cursor: default; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+
+<div id="hud">Loading...</div>
+<div id="classes"></div>
+
+<div id="leaderboard">
+  <div class="title">BẢNG XẾP HẠNG</div>
+  <div id="lb-list"></div>
+</div>
+
+<div id="panel"><div style="font-weight:bold; margin-bottom: 4px;" id="ptitle"></div><div id="rows"></div></div>
+<div id="xp"><div class="label" id="xplabel"></div><div class="bar"><div class="fill" id="xpfill"></div></div></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+function resize() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+window.addEventListener('resize', resize);
+resize();
+
+const socket = io();
+let myId = null, mapSize = 3000, radius = 25, maxStat = 7;
+let players = {}, bullets = [], shapes = [], leaderboard = [];
+
+const CLASSES = {
+  basic: [{ a: 0, off: 0, w: 18, l: 20 }],
+  twin: [{ a: 0, off: -10, w: 14, l: 20 }, { a: 0, off: 10, w: 14, l: 20 }],
+  sniper: [{ a: 0, off: 0, w: 18, l: 32 }],
+  machine_gun: [{ a: 0, off: 0, w: 24, l: 18 }],
+  flank_guard: [{ a: 0, off: 0, w: 18, l: 20 }, { a: Math.PI, off: 0, w: 18, l: 18 }]
+};
+
+socket.on('init', d => { myId = d.id; mapSize = d.mapSize; radius = d.radius; maxStat = d.maxStat; });
+socket.on('state', s => {
+  players = s.players; bullets = s.bullets; shapes = s.shapes; leaderboard = s.leaderboard;
+  updateUI();
+});
+
+// Build Panel
+const STAT_INFO = [['speed', 'Tốc độ'], ['damage', 'Sát thương'], ['reload', 'Tốc độ bắn'], ['health', 'Máu tối đa']];
+const rowsEl = document.getElementById('rows');
+const rowRefs = {};
+STAT_INFO.forEach(([key, label], i) => {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<span class="name">[${i+1}] ${label}</span><span class="pips"></span><button>+</button>`;
+  const pips = row.querySelector('.pips');
+  for (let n = 0; n < 7; n++) pips.appendChild(document.createElement('span')).className = 'pip';
+  const btn = row.querySelector('button');
+  btn.onclick = () => socket.emit('upgrade', key);
+  rowsEl.appendChild(row);
+  rowRefs[key] = { pips: pips.children, btn };
+});
+
+function updateUI() {
+  const me = players[myId];
+  if (!me) return;
+
+  document.getElementById('hud').textContent = `Online: ${Object.keys(players).length} | WASD: Di chuyển | Chuột: Bắn`;
+  document.getElementById('ptitle').textContent = 'Điểm kỹ năng: ' + me.points;
+  document.getElementById('xplabel').textContent = `Cấp ${me.level} - Class: ${me.class.toUpperCase()}`;
+  document.getElementById('xpfill').style.width = Math.min(100, (me.xp / me.need) * 100) + '%';
+
+  // Stats UI
+  for (const [key] of STAT_INFO) {
+    const v = me.stats[key];
+    const ref = rowRefs[key];
+    for (let n = 0; n < ref.pips.length; n++) ref.pips[n].classList.toggle('on', n < v);
+    ref.btn.disabled = me.points <= 0 || v >= maxStat;
+  }
+
+  // Class Selection UI
+  const classBox = document.getElementById('classes');
+  if (me.level >= 15 && me.class === 'basic') {
+    classBox.style.display = 'flex';
+    classBox.innerHTML = '';
+    ['twin', 'sniper', 'machine_gun', 'flank_guard'].forEach(cls => {
+      const btn = document.createElement('button');
+      btn.className = 'class-btn';
+      btn.innerText = cls.replace('_', ' ').toUpperCase();
+      btn.onclick = () => socket.emit('selectClass', cls);
+      classBox.appendChild(btn);
+    });
+  } else {
+    classBox.style.display = 'none';
+  }
+
+  // Leaderboard
+  const lbList = document.getElementById('lb-list');
+  lbList.innerHTML = leaderboard.map((item, idx) => `
+    <div class="lb-row">
+      <span style="color:${item.color}">${idx + 1}. ${item.name}</span>
+      <b>${item.score}</b>
+    </div>
+  `).join('');
+}
+
+// Input setup
+const input = { up: false, down: false, left: false, right: false, shooting: false, angle: 0 };
+const keyMap = { KeyW:'up', KeyS:'down', KeyA:'left', KeyD:'right' };
+const upgradeKeys = { Digit1:'speed', Digit2:'damage', Digit3:'reload', Digit4:'health' };
+
+window.onkeydown = e => {
+  if (keyMap[e.code]) input[keyMap[e.code]] = true;
+  if (upgradeKeys[e.code] && !e.repeat) socket.emit('upgrade', upgradeKeys[e.code]);
+};
+window.onkeyup = e => { if (keyMap[e.code]) input[keyMap[e.code]] = false; };
+canvas.onmousemove = e => { input.angle = Math.atan2(e.clientY - canvas.height/2, e.clientX - canvas.width/2); };
+canvas.onmousedown = e => { if (e.button === 0) input.shooting = true; };
+window.onmouseup = e => { if (e.button === 0) input.shooting = false; };
+
+setInterval(() => socket.emit('input', input), 1000 / 30);
+
+// Render Graphics
+function drawBar(cx, y, w, ratio, color) {
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  ctx.fillRect(cx - w/2, y, w, 5);
+  ctx.fillStyle = color;
+  ctx.fillRect(cx - w/2, y, w * Math.max(0, ratio), 5);
+}
+
+function drawShape(s, sx, sy, t) {
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(s.id * 1.5 + t * 0.0003);
+  ctx.lineWidth = 3;
+
+  if (s.type === 'square') {
+    ctx.fillStyle = '#ffe869'; ctx.strokeStyle = '#bfae4e';
+    ctx.fillRect(-s.r, -s.r, s.r*2, s.r*2);
+    ctx.strokeRect(-s.r, -s.r, s.r*2, s.r*2);
+  } else if (s.type === 'triangle') {
+    ctx.fillStyle = '#fc7677'; ctx.strokeStyle = '#bd5859';
+    ctx.beginPath();
+    for(let i=0; i<3; i++) {
+      let a = (i * Math.PI * 2)/3 - Math.PI/2;
+      ctx.lineTo(Math.cos(a)*s.r*1.2, Math.sin(a)*s.r*1.2);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else if (s.type === 'pentagon') {
+    ctx.fillStyle = '#768dfc'; ctx.strokeStyle = '#5569c7';
+    ctx.beginPath();
+    for(let i=0; i<5; i++) {
+      let a = (i * Math.PI * 2)/5 - Math.PI/2;
+      ctx.lineTo(Math.cos(a)*s.r*1.2, Math.sin(a)*s.r*1.2);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  ctx.restore();
+  if (s.hp < s.maxHp) drawBar(sx, sy + s.r + 8, 36, s.hp / s.maxHp, '#2ecc71');
+}
+
+function drawTank(p, sx, sy) {
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(p.angle);
+  ctx.fillStyle = '#999';
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 3;
+
+  const barrels = CLASSES[p.class] || CLASSES.basic;
+  barrels.forEach(b => {
+    ctx.save();
+    ctx.rotate(b.a);
+    ctx.fillRect(0, -b.w/2 + b.off, radius + b.l, b.w);
+    ctx.strokeRect(0, -b.w/2 + b.off, radius + b.l, b.w);
+    ctx.restore();
+  });
+
+  ctx.restore();
+
+  // Thân xe
+  ctx.beginPath();
+  ctx.arc(sx, sy, radius, 0, Math.PI * 2);
+  ctx.fillStyle = p.color; ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.stroke();
+
+  // Tên & Thanh máu
+  ctx.fillStyle = '#222';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText(p.name, sx, sy - radius - 12);
+  if (p.hp < p.maxHp) drawBar(sx, sy + radius + 10, 44, p.hp / p.maxHp, '#2ecc71');
+}
+
+function render(t) {
+  const me = players[myId];
+  const camX = me ? me.x - canvas.width / 2 : 0;
+  const camY = me ? me.y - canvas.height / 2 : 0;
+
+  ctx.fillStyle = '#b5b5b5';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#cdcdcd';
+  ctx.fillRect(-camX, -camY, mapSize, mapSize);
+
+  // Khối Pentagon Nest Zone ở giữa bản đồ
+  ctx.fillStyle = 'rgba(118, 141, 252, 0.08)';
+  ctx.beginPath();
+  ctx.arc(mapSize/2 - camX, mapSize/2 - camY, 350, 0, Math.PI*2);
+  ctx.fill();
+
+  for (const s of shapes) drawShape(s, s.x - camX, s.y - camY, t);
+
+  for (const b of bullets) {
+    ctx.beginPath();
+    ctx.arc(b.x - camX, b.y - camY, 8, 0, Math.PI * 2);
+    ctx.fillStyle = b.color; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,0,0,0.3)'; ctx.stroke();
+  }
+
+  for (const id in players) drawTank(players[id], players[id].x - camX, players[id].y - camY);
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
