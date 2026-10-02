@@ -1,6 +1,0 @@
-{
-  "name": "Diep.io Enhanced - NextGen Tank Battle",
-  "description": "Diep.io clone enhanced with smooth controls, modern particle graphics, dynamic weather & biomes, deep class upgrade trees, AI bot battle, and real-time rankings.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
